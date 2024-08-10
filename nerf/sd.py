@@ -65,7 +65,7 @@ class StableDiffusion(nn.Module):
         # if is_xformers_available():
         #     self.unet.enable_xformers_memory_efficient_attention()
         
-        self.scheduler = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler")
+        self.scheduler = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler", cache_dir = opt.cache_dir)
 
         self.num_train_timesteps = self.scheduler.config.num_train_timesteps
         self.min_step = int(self.num_train_timesteps * opt.t_range[0])
@@ -114,51 +114,84 @@ class StableDiffusion(nn.Module):
 
         # predict the noise residual with unet, NO grad!
         # TODO: noise calculating part
-        with torch.no_grad():
-            # add noise
-            noise = torch.randn_like(latents)
-            latents_noisy = self.scheduler.add_noise(latents, noise, t)
-            # pred noise
-            latent_model_input = torch.cat([latents_noisy] * 2)
-            noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+        
+        if not self.opt.multi_step:
+            with torch.no_grad():
+                # add noise
+                noise = torch.randn_like(latents)
+                latents_noisy = self.scheduler.add_noise(latents, noise, t)
+                # pred noise
+                latent_model_input = torch.cat([latents_noisy] * 2)
+                noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
 
-            # perform guidance (high scale from paper!)
-            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-            # if self.opt.sds is False:
-            #     if q_unet is not None:
-            #         if pose is not None:
-            #             noise_pred_q = q_unet(latents_noisy, t, c = pose, shading = shading).sample
-            #         else:
-            #             raise NotImplementedError()
+                # perform guidance (high scale from paper!)
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
-            #         # TODO: what is this v_pred? 
-            #         if self.opt.v_pred:
-            #             sqrt_alpha_prod = self.scheduler.alphas_cumprod.to(self.device)[t] ** 0.5
-            #             sqrt_alpha_prod = sqrt_alpha_prod.flatten()
-            #             while len(sqrt_alpha_prod.shape) < len(latents_noisy.shape):
-            #                 sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
-            #             sqrt_one_minus_alpha_prod = (1 - self.scheduler.alphas_cumprod.to(self.device)[t]) ** 0.5
-            #             sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.flatten()
-            #             while len(sqrt_one_minus_alpha_prod.shape) < len(latents_noisy.shape):
-            #                 sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
-            #             noise_pred_q = sqrt_alpha_prod * noise_pred_q + sqrt_one_minus_alpha_prod * latents_noisy
+                # An error in original implimentation
+                # noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                noise_pred = noise_pred_text + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
 
-        # w(t), sigma_t^2
-        w = (1 - self.alphas[t])
-        # w = self.alphas[t] ** 0.5 * (1 - self.alphas[t])
-        # TODO: change the loss computation
-        if self.opt.sds:
-            grad = w * (noise_pred - noise)
+
+                # if self.opt.sds is False:
+                #     if q_unet is not None:
+                #         if pose is not None:
+                #             noise_pred_q = q_unet(latents_noisy, t, c = pose, shading = shading).sample
+                #         else:
+                #             raise NotImplementedError()
+
+                #         # TODO: what is this v_pred? 
+                #         if self.opt.v_pred:
+                #             sqrt_alpha_prod = self.scheduler.alphas_cumprod.to(self.device)[t] ** 0.5
+                #             sqrt_alpha_prod = sqrt_alpha_prod.flatten()
+                #             while len(sqrt_alpha_prod.shape) < len(latents_noisy.shape):
+                #                 sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
+                #             sqrt_one_minus_alpha_prod = (1 - self.scheduler.alphas_cumprod.to(self.device)[t]) ** 0.5
+                #             sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.flatten()
+                #             while len(sqrt_one_minus_alpha_prod.shape) < len(latents_noisy.shape):
+                #                 sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
+                #             noise_pred_q = sqrt_alpha_prod * noise_pred_q + sqrt_one_minus_alpha_prod * latents_noisy
+
+
+            # w(t), sigma_t^2
+            w = (1 - self.alphas[t])
+            # w = self.alphas[t] ** 0.5 * (1 - self.alphas[t])
+            # TODO: change the loss computation
+            if self.opt.sds:
+                grad = w * (noise_pred - noise)
+            else:
+                # grad = w * (noise_pred - noise_pred_q)
+                sqrt_alpha_prod = self.alphas[t] ** 0.5
+                sigmat = w ** 0.5
+                snr = sqrt_alpha_prod/sigmat
+                eta_1 = snr if not t5 else self.opt.eta_1/10
+                # eta_1 = snr
+                grad = eta_1 * noise_pred - snr*noise + torch.sqrt(2*snr*eta_1)*torch.randn_like(noise, device=noise.device)
+
         else:
-            # grad = w * (noise_pred - noise_pred_q)
+            # multi-step
+            w = (1 - self.alphas[t])
             sqrt_alpha_prod = self.alphas[t] ** 0.5
-            sqrt_sigmat = w ** 0.5
-            snr = sqrt_alpha_prod/sqrt_sigmat
-            # eta_1 = self.opt.eta_1
-            eta_1 = snr
-            grad = eta_1 * noise_pred - snr*noise + torch.sqrt(2*snr*eta_1)*torch.randn_like(noise, device=noise.device)
+            sigmat = w ** 0.5
+
+            with torch.no_grad():
+                noise = torch.randn_like(latents)
+                latents_noisy = self.scheduler.add_noise(latents, noise, t)
+                for i in range(5):
+
+                    latent_model_input = torch.cat([latents_noisy] * 2)
+                    noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+
+                    # perform guidance (high scale from paper!)
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+
+                    # An error in original implimentation
+                    # noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    noise_pred = noise_pred_text + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+                    latents_noisy = latents_noisy - self.opt.eta_1 * w/sqrt_alpha_prod * noise_pred + torch.sqrt(2*sigmat**3/sqrt_alpha_prod * self.opt.eta_1)*torch.randn_like(noise_pred, device=noise.device)
+
+                grad = sqrt_alpha_prod/w * (sqrt_alpha_prod * latents - latents_noisy)
 
         # clip grad for stable training?
         # grad = grad.clamp(-10, 10)

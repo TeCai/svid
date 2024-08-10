@@ -396,9 +396,9 @@ class Trainer(object):
             from diffusers.models.attention_processor import LoRAAttnProcessor
             import einops
             if not opt.v_pred:
-                _unet = UNet2DConditionModel.from_pretrained("stabilityai/stable-diffusion-2-1-base", subfolder="unet", low_cpu_mem_usage=False, device_map=None).to(device)
+                _unet = UNet2DConditionModel.from_pretrained("stabilityai/stable-diffusion-2-1-base", subfolder="unet", low_cpu_mem_usage=False, device_map=None, cache_dir = opt.cache_dir).to(device)
             else:
-                _unet = UNet2DConditionModel.from_pretrained("stabilityai/stable-diffusion-2-1", subfolder="unet", low_cpu_mem_usage=False, device_map=None).to(device)
+                _unet = UNet2DConditionModel.from_pretrained("stabilityai/stable-diffusion-2-1", subfolder="unet", low_cpu_mem_usage=False, device_map=None, cache_dir = opt.cache_dir).to(device)
             _unet.requires_grad_(False)
             # lora_attn_procs = {}
             # for name in _unet.attn_processors.keys():
