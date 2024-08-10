@@ -48,7 +48,9 @@ class NeRFNetwork(NeRFRenderer):
         self.img_channels = 4 if opt.latent ==True else 3
         self.n_particles = opt.n_particles
 
-        self.encoders = torch.nn.ModuleList([get_encoder('hashgrid', input_dim=3, log2_hashmap_size=19, desired_resolution=self.opt.desired_resolution * self.bound, interpolation='smoothstep')[0] for _ in range(self.n_particles)])
+        # self.encoders = torch.nn.ModuleList([get_encoder('hashgrid', input_dim=3, log2_hashmap_size=19, desired_resolution=self.opt.desired_resolution * self.bound, interpolation='smoothstep')[0] for _ in range(self.n_particles)])
+        self.encoders = torch.nn.ModuleList([get_encoder('frequency_torch', input_dim=3, log2_hashmap_size=19, desired_resolution=self.opt.desired_resolution * self.bound, interpolation='smoothstep')[0] for _ in range(self.n_particles)]) if opt.debug else torch.nn.ModuleList([get_encoder('hashgrid', input_dim=3, log2_hashmap_size=19, desired_resolution=self.opt.desired_resolution * self.bound, interpolation='smoothstep')[0] for _ in range(self.n_particles)])
+
         self.in_dim = self.encoders[0].output_dim
         self.sigma_nets = torch.nn.ModuleList([MLP(self.in_dim, self.img_channels + 1, hidden_dim, num_layers, bias=True) for _ in range(self.n_particles)])
         self.normal_nets = torch.nn.ModuleList([MLP(self.in_dim, 3, hidden_dim, num_layers, bias=True) for _ in range(self.n_particles)])
@@ -61,9 +63,11 @@ class NeRFNetwork(NeRFRenderer):
             self.hidden_dim_bg = hidden_dim_bg
 
             if not self.opt.complex_bg:
-                self.encoder_bgs = torch.nn.ModuleList([get_encoder('frequency', input_dim=3, multires=4)[0] for _ in range(self.n_particles)])
+                # self.encoder_bgs = torch.nn.ModuleList([get_encoder('frequency', input_dim=3, multires=4)[0] for _ in range(self.n_particles)])
+                self.encoder_bgs = torch.nn.ModuleList([get_encoder('frequency_torch', input_dim=3, multires=4)[0] for _ in range(self.n_particles)]) if opt.debug else torch.nn.ModuleList([get_encoder('frequency', input_dim=3, multires=4)[0] for _ in range(self.n_particles)])
             else:
-                self.encoder_bgs = torch.nn.ModuleList([get_encoder('frequency', input_dim=3, log2_hashmap_size=19, desired_resolution=self.opt.desired_resolution * self.bound, interpolation='smoothstep')[0] for _ in range(self.n_particles)])
+                # self.encoder_bgs = torch.nn.ModuleList([get_encoder('frequency', input_dim=3, log2_hashmap_size=19, desired_resolution=self.opt.desired_resolution * self.bound, interpolation='smoothstep')[0] for _ in range(self.n_particles)])
+                self.encoder_bgs = torch.nn.ModuleList([get_encoder('frequency_torch', input_dim=3, log2_hashmap_size=19, desired_resolution=self.opt.desired_resolution * self.bound, interpolation='smoothstep')[0] for _ in range(self.n_particles)]) if opt.debug else torch.nn.ModuleList([get_encoder('frequency', input_dim=3, log2_hashmap_size=19, desired_resolution=self.opt.desired_resolution * self.bound, interpolation='smoothstep')[0] for _ in range(self.n_particles)])
             self.in_dim_bg = self.encoder_bgs[0].output_dim
             self.bg_nets = torch.nn.ModuleList([MLP(self.in_dim_bg, self.img_channels, hidden_dim_bg, num_layers_bg, bias=True) for _ in range(self.n_particles)])           
         else:

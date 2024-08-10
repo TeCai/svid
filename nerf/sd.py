@@ -57,10 +57,10 @@ class StableDiffusion(nn.Module):
             raise ValueError(f'Stable-diffusion version {self.sd_version} not supported.')
 
         # Create model
-        self.vae = AutoencoderKL.from_pretrained(model_key, subfolder="vae").to(self.device)
-        self.tokenizer = CLIPTokenizer.from_pretrained(model_key, subfolder="tokenizer")
-        self.text_encoder = CLIPTextModel.from_pretrained(model_key, subfolder="text_encoder").to(self.device)
-        self.unet = UNet2DConditionModel.from_pretrained(model_key, subfolder="unet").to(self.device)
+        self.vae = AutoencoderKL.from_pretrained(model_key, subfolder="vae", cache_dir = opt.cache_dir).to(self.device)
+        self.tokenizer = CLIPTokenizer.from_pretrained(model_key, subfolder="tokenizer", cache_dir = opt.cache_dir)
+        self.text_encoder = CLIPTextModel.from_pretrained(model_key, subfolder="text_encoder", cache_dir = opt.cache_dir).to(self.device)
+        self.unet = UNet2DConditionModel.from_pretrained(model_key, subfolder="unet", cache_dir = opt.cache_dir).to(self.device)
 
         # if is_xformers_available():
         #     self.unet.enable_xformers_memory_efficient_attention()
@@ -113,6 +113,7 @@ class StableDiffusion(nn.Module):
             t = torch.randint(self.min_step, self.max_step + 1, [1], dtype=torch.long, device=self.device)
 
         # predict the noise residual with unet, NO grad!
+        # TODO: noise calculating part
         with torch.no_grad():
             # add noise
             noise = torch.randn_like(latents)
@@ -124,32 +125,40 @@ class StableDiffusion(nn.Module):
             # perform guidance (high scale from paper!)
             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-            if self.opt.sds is False:
-                if q_unet is not None:
-                    if pose is not None:
-                        noise_pred_q = q_unet(latents_noisy, t, c = pose, shading = shading).sample
-                    else:
-                        raise NotImplementedError()
+            # if self.opt.sds is False:
+            #     if q_unet is not None:
+            #         if pose is not None:
+            #             noise_pred_q = q_unet(latents_noisy, t, c = pose, shading = shading).sample
+            #         else:
+            #             raise NotImplementedError()
 
-                    if self.opt.v_pred:
-                        sqrt_alpha_prod = self.scheduler.alphas_cumprod.to(self.device)[t] ** 0.5
-                        sqrt_alpha_prod = sqrt_alpha_prod.flatten()
-                        while len(sqrt_alpha_prod.shape) < len(latents_noisy.shape):
-                            sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
-                        sqrt_one_minus_alpha_prod = (1 - self.scheduler.alphas_cumprod.to(self.device)[t]) ** 0.5
-                        sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.flatten()
-                        while len(sqrt_one_minus_alpha_prod.shape) < len(latents_noisy.shape):
-                            sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
-                        noise_pred_q = sqrt_alpha_prod * noise_pred_q + sqrt_one_minus_alpha_prod * latents_noisy
+            #         # TODO: what is this v_pred? 
+            #         if self.opt.v_pred:
+            #             sqrt_alpha_prod = self.scheduler.alphas_cumprod.to(self.device)[t] ** 0.5
+            #             sqrt_alpha_prod = sqrt_alpha_prod.flatten()
+            #             while len(sqrt_alpha_prod.shape) < len(latents_noisy.shape):
+            #                 sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
+            #             sqrt_one_minus_alpha_prod = (1 - self.scheduler.alphas_cumprod.to(self.device)[t]) ** 0.5
+            #             sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.flatten()
+            #             while len(sqrt_one_minus_alpha_prod.shape) < len(latents_noisy.shape):
+            #                 sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
+            #             noise_pred_q = sqrt_alpha_prod * noise_pred_q + sqrt_one_minus_alpha_prod * latents_noisy
 
 
         # w(t), sigma_t^2
         w = (1 - self.alphas[t])
         # w = self.alphas[t] ** 0.5 * (1 - self.alphas[t])
-        if q_unet is None or self.opt.sds:
+        # TODO: change the loss computation
+        if self.opt.sds:
             grad = w * (noise_pred - noise)
         else:
-            grad = w * (noise_pred - noise_pred_q)
+            # grad = w * (noise_pred - noise_pred_q)
+            sqrt_alpha_prod = self.alphas[t] ** 0.5
+            sqrt_sigmat = w ** 0.5
+            snr = sqrt_alpha_prod/sqrt_sigmat
+            # eta_1 = self.opt.eta_1
+            eta_1 = snr
+            grad = eta_1 * noise_pred - snr*noise + torch.sqrt(2*snr*eta_1)*torch.randn_like(noise, device=noise.device)
 
         # clip grad for stable training?
         # grad = grad.clamp(-10, 10)
@@ -158,6 +167,7 @@ class StableDiffusion(nn.Module):
         grad = torch.nan_to_num(grad)
 
         # since we omitted an item in grad, we need to use the custom function to specify the gradient
+        #TODO: ?
         loss = SpecifyGradient.apply(latents, grad)
 
         pseudo_loss = torch.mul((w*noise_pred).detach(), latents.detach()).detach().sum()

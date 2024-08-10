@@ -57,6 +57,9 @@ if __name__ == '__main__':
     parser.add_argument('--optim', type=str, default='adam', choices=['adan', 'adam'], help="optimizer")
     parser.add_argument('--sd_version', type=str, default='2.1', choices=['1.5', '2.0', '2.1'], help="stable diffusion version")
     parser.add_argument('--hf_key', type=str, default=None, help="hugging face Stable diffusion model key")
+    parser.add_argument('--cache_dir', type = str, default='./', help="Directory to cache hugging face models")
+    parser.add_argument('--debug', action='store_true',  help="For debugging purposes with out cuda dependencies")
+    parser.add_argument('--eta_1', type=float, default=0.01, help="eta_1 for SDE step size")
     # rendering resolution in training, decrease this if CUDA OOM.
     parser.add_argument('--w', type=int, default=512, help="render width for NeRF in training")
     parser.add_argument('--h', type=int, default=512, help="render height for NeRF in training")

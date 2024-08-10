@@ -400,20 +400,20 @@ class Trainer(object):
             else:
                 _unet = UNet2DConditionModel.from_pretrained("stabilityai/stable-diffusion-2-1", subfolder="unet", low_cpu_mem_usage=False, device_map=None).to(device)
             _unet.requires_grad_(False)
-            lora_attn_procs = {}
-            for name in _unet.attn_processors.keys():
-                cross_attention_dim = None if name.endswith("attn1.processor") else _unet.config.cross_attention_dim
-                if name.startswith("mid_block"):
-                    hidden_size = _unet.config.block_out_channels[-1]
-                elif name.startswith("up_blocks"):
-                    block_id = int(name[len("up_blocks.")])
-                    hidden_size = list(reversed(_unet.config.block_out_channels))[block_id]
-                elif name.startswith("down_blocks"):
-                    block_id = int(name[len("down_blocks.")])
-                    hidden_size = _unet.config.block_out_channels[block_id]
-                lora_attn_procs[name] = LoRAAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
-            _unet.set_attn_processor(lora_attn_procs)
-            lora_layers = AttnProcsLayers(_unet.attn_processors)
+            # lora_attn_procs = {}
+            # for name in _unet.attn_processors.keys():
+            #     cross_attention_dim = None if name.endswith("attn1.processor") else _unet.config.cross_attention_dim
+            #     if name.startswith("mid_block"):
+            #         hidden_size = _unet.config.block_out_channels[-1]
+            #     elif name.startswith("up_blocks"):
+            #         block_id = int(name[len("up_blocks.")])
+            #         hidden_size = list(reversed(_unet.config.block_out_channels))[block_id]
+            #     elif name.startswith("down_blocks"):
+            #         block_id = int(name[len("down_blocks.")])
+            #         hidden_size = _unet.config.block_out_channels[block_id]
+            #     lora_attn_procs[name] = LoRAAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
+            # _unet.set_attn_processor(lora_attn_procs)
+            # lora_layers = AttnProcsLayers(_unet.attn_processors)
 
             text_input = self.guidance.tokenizer(opt.text, padding='max_length', max_length=self.guidance.tokenizer.model_max_length, truncation=True, return_tensors='pt')
             with torch.no_grad():
@@ -432,7 +432,7 @@ class Trainer(object):
                     textemb = einops.repeat(self.text_embeddings, '1 L D -> B L D', B=x.shape[0]).to(device)
                     return self.unet(x,t,encoder_hidden_states=textemb,c=c,shading=shading)
             self._unet = _unet
-            self.lora_layers = lora_layers
+            # self.lora_layers = lora_layers
             self.unet = LoraUnet().to(device)                     
 
         self.unet = self.unet.to(self.device)
@@ -440,7 +440,7 @@ class Trainer(object):
             self.unet_optimizer = optim.Adam(self.unet.parameters(), lr=self.opt.unet_lr) # naive adam
         else:
             params = [
-                {'params': self.lora_layers.parameters()},
+                # {'params': self.lora_layers.parameters()},
                 {'params': self._unet.camera_emb.parameters()},
                 {'params': self._unet.lambertian_emb},
                 {'params': self._unet.textureless_emb},
@@ -449,6 +449,9 @@ class Trainer(object):
             self.unet_optimizer = optim.AdamW(params, lr=self.opt.unet_lr) # naive adam
         warm_up_lr_unet = lambda iter: iter / (self.opt.warm_iters*self.opt.K+1) if iter <= (self.opt.warm_iters*self.opt.K+1) else 1
         self.unet_scheduler = optim.lr_scheduler.LambdaLR(self.unet_optimizer, warm_up_lr_unet)
+        # self.unet = _unet # this for no reason
+        # self._unet.in_channels = 4
+        # self._unet.out_channels = 4
 
         if lr_scheduler is None:
             self.lr_scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda epoch: 1) # fake scheduler
@@ -918,13 +921,14 @@ class Trainer(object):
             unet_bs = 8 if not self.opt.lora else 2
 
             if (self.epoch % self.eval_interval == 0 or self.epoch == 1 or self.epoch < 2) and self.opt.K > 0:
-                pipeline = DDIMPipeline(unet=self.unet, scheduler=self.guidance.scheduler, v_pred = self.opt.v_pred)
+                # TODO: pipeline = DDIMPipeline(unet=self.unet, scheduler=self.guidance.scheduler, v_pred = self.opt.v_pred) # needs to modify this in order to sample from q_t^mu
+                pipeline = DDIMPipeline(unet=self.unet, scheduler=self.guidance.scheduler, v_pred = self.opt.v_pred) 
                 with torch.no_grad():
                     images = pipeline(batch_size=unet_bs, output_type="numpy", shading = "albedo")
                     rgb = self.guidance.decode_latents(images)
                 img = rgb.detach().permute(0,2,3,1).cpu().numpy()
                 img = torch.tensor(img.transpose(0,3,1,2), dtype=torch.float32)
-                torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-albedo.png"), normalize=True, range=(0,1))
+                torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-albedo.png"), normalize=True)
                 
                 if not self.opt.albedo:
                     with torch.no_grad():
@@ -932,7 +936,7 @@ class Trainer(object):
                         rgb = self.guidance.decode_latents(images)
                     img = rgb.detach().permute(0,2,3,1).cpu().numpy()
                     img = torch.tensor(img.transpose(0,3,1,2), dtype=torch.float32)
-                    torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-textureless.png"), normalize=True, range=(0,1))
+                    torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-textureless.png"), normalize=True)
                     
                     if not self.opt.no_lambertian:
                         with torch.no_grad():
@@ -940,7 +944,7 @@ class Trainer(object):
                             rgb = self.guidance.decode_latents(images)
                         img = rgb.detach().permute(0,2,3,1).cpu().numpy()
                         img = torch.tensor(img.transpose(0,3,1,2), dtype=torch.float32)
-                        torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-lambertian.png"), normalize=True, range=(0,1))
+                        torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-lambertian.png"), normalize=True)
                             
                 # if self.opt.p_normal > 0:
                 with torch.no_grad():
@@ -948,7 +952,7 @@ class Trainer(object):
                     rgb = self.guidance.decode_latents(images)
                 img = rgb.detach().permute(0,2,3,1).cpu().numpy()
                 img = torch.tensor(img.transpose(0,3,1,2), dtype=torch.float32)
-                torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-normal.png"), normalize=True, range=(0,1))
+                torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-normal.png"), normalize=True)
                             
 
                 # poses = self.init_evalpose(valid_loader)
@@ -967,7 +971,7 @@ class Trainer(object):
                         rgb = self.guidance.decode_latents(images)
                     img = rgb.detach().permute(0,2,3,1).cpu().numpy()
                     img = torch.tensor(img.transpose(0,3,1,2), dtype=torch.float32)
-                    torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-cond.png"), normalize=True, range=(0,1))
+                    torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-cond.png"), normalize=True)
 
             if self.epoch % self.opt.test_interval == 0:
                 self.save_checkpoint(full=False, best=True)
@@ -1094,38 +1098,38 @@ class Trainer(object):
                 self.add_buffer(latents, data['pose'])
 
 
-            assert self.opt.q_cond
-            if self.global_step % self.opt.K2 == 0 and not self.opt.sds:
-                for _ in range(self.opt.K):
-                    self.unet_optimizer.zero_grad()
-                    timesteps = torch.randint(0, 1000, (self.opt.unet_bs,), device=self.device).long() # temperarily hard-coded for simplicity
-                    with torch.no_grad():
-                        if self.buffer_imgs is None or self.buffer_imgs.shape[0]<self.opt.buffer_size:
-                            latents_clean = latents.expand(self.opt.unet_bs, latents.shape[1], latents.shape[2], latents.shape[3]).contiguous()
-                            if self.opt.q_cond:
-                                pose = data['pose']
-                                pose = pose.view(pose.shape[0], 16)
-                                pose = pose.expand(self.opt.unet_bs, 16).contiguous()
-                                if random.random() < self.opt.uncond_p:
-                                    pose = torch.zeros_like(pose)
-                        else:
-                            latents_clean, pose = self.sample_buffer(self.opt.unet_bs)
-                            if random.random() < self.opt.uncond_p:
-                                pose = torch.zeros_like(pose)
-                    noise = torch.randn(latents_clean.shape, device=self.device)
-                    latents_noisy = self.guidance.scheduler.add_noise(latents_clean, noise, timesteps)
-                    if self.opt.q_cond:
-                        model_output = self.unet(latents_noisy, timesteps, c = pose, shading = shading).sample
-                    else:
-                        model_output = self.unet(latents_noisy, timesteps).sample
-                    if self.opt.v_pred:
-                        loss_unet = F.mse_loss(model_output, self.guidance.scheduler.get_velocity(latents_clean, noise, timesteps))
-                    else:
-                        loss_unet = F.mse_loss(model_output, noise)
-                    loss_unet.backward()
-                    self.unet_optimizer.step()
-                    if self.scheduler_update_every_step:
-                        self.unet_scheduler.step()                    
+            # assert self.opt.q_cond
+            # if self.global_step % self.opt.K2 == 0 and not self.opt.sds:
+            #     for _ in range(self.opt.K):
+            #         self.unet_optimizer.zero_grad()
+            #         timesteps = torch.randint(0, 1000, (self.opt.unet_bs,), device=self.device).long() # temperarily hard-coded for simplicity
+            #         with torch.no_grad():
+            #             if self.buffer_imgs is None or self.buffer_imgs.shape[0]<self.opt.buffer_size:
+            #                 latents_clean = latents.expand(self.opt.unet_bs, latents.shape[1], latents.shape[2], latents.shape[3]).contiguous()
+            #                 if self.opt.q_cond:
+            #                     pose = data['pose']
+            #                     pose = pose.view(pose.shape[0], 16)
+            #                     pose = pose.expand(self.opt.unet_bs, 16).contiguous()
+            #                     if random.random() < self.opt.uncond_p:
+            #                         pose = torch.zeros_like(pose)
+            #             else:
+            #                 latents_clean, pose = self.sample_buffer(self.opt.unet_bs)
+            #                 if random.random() < self.opt.uncond_p:
+            #                     pose = torch.zeros_like(pose)
+            #         noise = torch.randn(latents_clean.shape, device=self.device)
+            #         latents_noisy = self.guidance.scheduler.add_noise(latents_clean, noise, timesteps)
+            #         if self.opt.q_cond:
+            #             model_output = self.unet(latents_noisy, timesteps, c = pose, shading = shading).sample
+            #         else:
+            #             model_output = self.unet(latents_noisy, timesteps).sample
+            #         if self.opt.v_pred:
+            #             loss_unet = F.mse_loss(model_output, self.guidance.scheduler.get_velocity(latents_clean, noise, timesteps))
+            #         else:
+            #             loss_unet = F.mse_loss(model_output, noise)
+            #         loss_unet.backward()
+            #         self.unet_optimizer.step()
+            #         if self.scheduler_update_every_step:
+            #             self.unet_scheduler.step()                    
 
             if self.scheduler_update_every_step:
                 pbar.set_description(f"loss={loss_val:.4f} ({total_loss/self.local_step:.4f}), lr={self.optimizer.param_groups[0]['lr']:.6f}")
@@ -1222,7 +1226,7 @@ class Trainer(object):
                 if not (self.opt.backbone == 'particle'):
                     break
             if self.local_rank == 0:
-                torchvision.utils.save_image(pre_imgs.permute(0,3,1,2), os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "-rgb-"+shading+".png"), nrow=self.opt.val_size, normalize=True, range=(0,1))
+                torchvision.utils.save_image(pre_imgs.permute(0,3,1,2), os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "-rgb-"+shading+".png"), nrow=self.opt.val_size, normalize=True)
                 if shading == "albedo":
                     torchvision.utils.save_image(pre_depths.unsqueeze(1), os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "-depth.png"), nrow=self.opt.val_size, normalize=True)
 

@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=0 python main.py --text "A pineapple." --iters 25000 --lambda_entropy 50 --scale 7.5 --n_particles 1 --h 256  --w 256 --t5_iters 5000 --workspace exp-nerf-stage1/ --debug --cache_dir /data2/users/zx1321/huggingface --max_ray_batch 2048 --eta_1 1
