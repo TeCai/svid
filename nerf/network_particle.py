@@ -190,7 +190,8 @@ class NeRFNetwork(NeRFRenderer):
 
     def get_params(self, lr, finetune = False):
         params = [
-            {'params': self.encoders.parameters(), 'lr': lr * 10},
+            # {'params': self.encoders.parameters(), 'lr': lr * 10},
+            {'params': self.encoders.parameters(), 'lr': lr }, # keep the same magnitude
             {'params': self.sigma_nets.parameters(), 'lr': lr},
         ]        
 

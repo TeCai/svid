@@ -18,6 +18,7 @@ from typing import List
 import torch
 from torch import Tensor
 from torch.optim.optimizer import Optimizer
+import math
 
 
 class Adan(Optimizer):
@@ -323,3 +324,144 @@ def _multi_tensor_adan(
         torch._foreach_div_(params, 1 + lr * weight_decay)
     torch._foreach_zero_(neg_pre_grads)
     torch._foreach_add_(neg_pre_grads, grads, alpha=-1.0)
+
+
+
+class NoisyOptimizerWrapper(Optimizer):
+    # A wrapper class for adding noise to the gradients of an optimizer
+
+    def __init__(self, optimizer, noise_level=0):
+        # Ensure the optimizer being wrapped is a subclass of torch.optim.Optimizer
+        if not isinstance(optimizer, Optimizer):
+            raise ValueError("Wrapped optimizer must be an instance of torch.optim.Optimizer")
+        
+        # Save the wrapped optimizer and default noise level
+        self.optimizer = optimizer
+        self.default_noise_level = noise_level
+        
+        # Pass the parameters of the wrapped optimizer to the base class (optim.Optimizer)
+        super(NoisyOptimizerWrapper, self).__init__(optimizer.param_groups, optimizer.defaults)
+
+    def step(self, closure=None, noise_level=None):
+        # Use the provided noise level or fall back to the default
+        if noise_level is None:
+            noise_level = self.default_noise_level
+
+        
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+
+        if noise_level == 0:
+            self.optimizer.step(closure)
+        else:
+            # Iterate through the parameter groups and apply noisy updates
+            for group in self.optimizer.param_groups:
+                for param in group['params']:
+                    if param.grad is not None:
+                        noise = torch.randn_like(param.grad) * torch.sqrt(noise_level / group['lr'])
+                        param.grad.data.add_(noise)
+
+            self.optimizer.step(closure)
+
+    def zero_grad(self):
+        self.optimizer.zero_grad()
+
+    def __getattr__(self, name):
+        return getattr(self.optimizer, name)
+
+    def state_dict(self):
+        return self.optimizer.state_dict()
+
+    def load_state_dict(self, state_dict):
+        self.optimizer.load_state_dict(state_dict)
+
+
+
+class EulerMaruyama(Optimizer):
+    def __init__(self, params, lr=0.001, noise_level=0):
+        defaults = dict(lr=lr, defalt_noise_level=noise_level)
+        super(EulerMaruyama, self).__init__(params, defaults)
+
+    def step(self, closure=None, noise_level=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            lr = group['lr']
+            noise_level = 0 if noise_level is None else noise_level
+
+
+            for param in group['params']:
+                if param.grad is None:
+                    continue
+
+                # Gradient (drift term)
+                d_p = param.grad.data
+
+                # Noise (diffusion term)
+                noise = torch.randn_like(d_p) * torch.sqrt(noise_level) * math.sqrt(lr)
+
+                # Euler-Maruyama update rule
+                param.data.add_(d_p, alpha=-lr)
+                param.data.add_(noise)
+
+        return loss
+
+    def zero_grad(self):
+        for group in self.param_groups:
+            for param in group['params']:
+                if param.grad is not None:
+                    param.grad.detach_()
+                    param.grad.zero_()
+
+
+class EulerMaruyamawithNoiseJumper(Optimizer):
+    def __init__(self, params, lr=0.001, noise_level=0, jump_interval = 20, jump_scale = 0.01):
+        defaults = dict(lr=lr, defalt_noise_level=noise_level)
+        self.jump_interval =   jump_interval
+        self.jump_scale = jump_scale
+        self.counter = 0
+        super(EulerMaruyamawithNoiseJumper, self).__init__(params, defaults)
+
+    def step(self, closure=None, noise_level=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            lr = group['lr']
+            noise_level = 0 if noise_level is None else noise_level
+
+
+            for param in group['params']:
+                if param.grad is None:
+                    continue
+
+                # Gradient (drift term)
+                d_p = param.grad.data
+
+                # Noise (diffusion term)
+                if self.counter != 0:
+                    noise = torch.randn_like(d_p) * torch.sqrt(noise_level) * math.sqrt(lr) * self.jump_scale
+                else:
+                    noise = torch.randn_like(d_p) * torch.sqrt(noise_level) * math.sqrt(lr)
+                
+
+                # Euler-Maruyama update rule
+                param.data.add_(d_p, alpha=-lr)
+                param.data.add_(noise)
+            
+            self.counter += 1
+            self.counter = self.counter % self.jump_interval
+
+        return loss
+
+    def zero_grad(self):
+        for group in self.param_groups:
+            for param in group['params']:
+                if param.grad is not None:
+                    param.grad.detach_()
+                    param.grad.zero_()

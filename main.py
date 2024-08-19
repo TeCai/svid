@@ -5,7 +5,7 @@ import sys
 from nerf.provider import NeRFDataset
 from nerf.utils import *
 from nerf.network_particle import NeRFNetwork
-
+from transformers import get_cosine_schedule_with_warmup
 
 if __name__ == '__main__':
 
@@ -33,7 +33,7 @@ if __name__ == '__main__':
     parser.add_argument('--iters', type=int, default=10000, help="training iters")
     parser.add_argument('--lr', type=float, default=1e-3, help="max learning rate")
     parser.add_argument('--warm_iters', type=int, default=500, help="training iters")
-    parser.add_argument('--min_lr', type=float, default=1e-4, help="minimal learning rate")
+    parser.add_argument('--min_lr', type=float, default=1e-7, help="minimal learning rate")
     parser.add_argument('--ckpt', type=str, default='scratch')
     parser.add_argument('--cuda_ray', action='store_true', help="use CUDA raymarching instead of pytorch")
     parser.add_argument('--max_steps', type=int, default=1024, help="max num steps sampled per ray (only valid when using --cuda_ray)")
@@ -45,6 +45,29 @@ if __name__ == '__main__':
     parser.add_argument('--albedo_iters', type=int, default=1000, help="training iters that only use albedo shading")
     parser.add_argument('--jitter_pose', action='store_true', help="add jitters to the randomly sampled camera poses")
     parser.add_argument('--uniform_sphere_rate', type=float, default=0.5, help="likelihood of sampling camera location uniformly on the sphere surface area")
+
+    #gradient obtain method
+    parser.add_argument('--grad_method', type = str, default = 'sde', help = 'one from [estimate, sde, two_stage], estimate: Nw Interpolate, sde: SDE on theta (need to use SGD), two_stage: flow xt then optimize theta')
+    # For Nw Interpolate
+    parser.add_argument('--kernel_sig_scale', type=float, default=0.1, help="The multipler of the variance of the kernel")
+    parser.add_argument('--num_estimate_samples', type=int, default=5, help="Number of samples to do NW interpolation")
+    # For SDE
+    parser.add_argument('--noise_scaler', type=float, default=0.01, help="scaler for the noise of diffuse term")
+    parser.add_argument('--jump', action='store_true',  help="Whether to use noise jumper")
+
+    # For two_stage
+    parser.add_argument('--eta_1', type=float, default=0.05, help="eta_1 for SDE step size on xt")
+    parser.add_argument('--noise_scaler_xt', type=float, default=0.01, help="scaler for the noise of diffuse term")
+    # parser.add_argument('--multi_step', action='store_true',  help="wether do multi_step flow for SDE")
+    parser.add_argument('--multi_step_m', type=int, default=1,  help="Steps to flow SDE")
+    parser.add_argument('--multi_step_n', type=int, default=5,  help="Steps to optimize theta")
+
+    # rendering resolution in training, decrease this if CUDA OOM.
+    parser.add_argument('--w', type=int, default=512, help="render width for NeRF in training")
+    parser.add_argument('--h', type=int, default=512, help="render height for NeRF in training")
+    
+
+
     # model options
     parser.add_argument('--bg_radius', type=float, default=1.4, help="if positive, use a background model at sphere(bg_radius)")
     parser.add_argument('--density_activation', type=str, default='softplus', choices=['softplus', 'exp'], help="density activation function")
@@ -57,13 +80,10 @@ if __name__ == '__main__':
     parser.add_argument('--optim', type=str, default='adam', choices=['adan', 'adam'], help="optimizer")
     parser.add_argument('--sd_version', type=str, default='2.1', choices=['1.5', '2.0', '2.1'], help="stable diffusion version")
     parser.add_argument('--hf_key', type=str, default=None, help="hugging face Stable diffusion model key")
+
     parser.add_argument('--cache_dir', type = str, default='./', help="Directory to cache hugging face models")
     parser.add_argument('--debug', action='store_true',  help="For debugging purposes with out cuda dependencies")
-    parser.add_argument('--eta_1', type=float, default=0.05, help="eta_1 for SDE step size")
-    parser.add_argument('--multi_step', action='store_true',  help="wether do multi_step flow for SDE")
-    # rendering resolution in training, decrease this if CUDA OOM.
-    parser.add_argument('--w', type=int, default=512, help="render width for NeRF in training")
-    parser.add_argument('--h', type=int, default=512, help="render height for NeRF in training")
+
 
     ### dataset options
     parser.add_argument('--bound', type=float, default=1, help="assume the scene is bounded in box(-bound, bound)")
@@ -146,6 +166,7 @@ if __name__ == '__main__':
     parser.add_argument('--sds', type=bool, default=False, help="use SDS instead of VSD")
     parser.add_argument('--finetune', type=bool, default=False, help="only finetune texture")
     parser.add_argument('--note', type=str, default='', help="")
+
     opt = parser.parse_args()
 
     assert opt.p_normal == 0
@@ -262,9 +283,19 @@ if __name__ == '__main__':
             # Adan usually requires a larger LR
             optimizer = lambda model: Adan(model.get_params(5 * opt.lr), eps=1e-8, weight_decay=2e-5, max_grad_norm=5.0, foreach=False)
         else:
-            optimizer = lambda model: torch.optim.Adam(model.get_params(opt.lr, finetune = opt.finetune), betas=(0.9, 0.99), eps=1e-15)
+            if opt.grad_method == 'estimate':
+                optimizer = lambda model: torch.optim.Adam(model.get_params(opt.lr, finetune = opt.finetune), betas=(0.9, 0.99), eps=1e-15)
+            elif opt.grad_method == 'sde':
 
-        scheduler = lambda optimizer: optim.lr_scheduler.LambdaLR(optimizer, lambda iter: 1)
+            # 
+            # optimizer = lambda model: torch.optim.SGD(model.get_params(opt.lr, finetune = opt.finetune))
+                from optimizer import EulerMaruyama, EulerMaruyamawithNoiseJumper
+                optimizer = lambda model: EulerMaruyamawithNoiseJumper(model.get_params(opt.lr, finetune = opt.finetune)) if opt.jump else EulerMaruyama(model.get_params(opt.lr, finetune = opt.finetune))
+            elif opt.grad_method == 'two_stage':
+                optimizer = lambda model: torch.optim.SGD(model.get_params(opt.lr, finetune = opt.finetune))
+
+        # scheduler = lambda optimizer: optim.lr_scheduler.LambdaLR(optimizer, lambda iter: 1)
+        scheduler = lambda optimizer: get_cosine_schedule_with_warmup(optimizer, opt.warm_iters, opt.iters, opt.min_lr)
 
         if opt.guidance == 'stable-diffusion':
             from nerf.sd import StableDiffusion

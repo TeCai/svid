@@ -5,7 +5,7 @@ import imageio
 import random
 import tensorboardX
 import numpy as np
-
+import math
 import time
 
 import cv2
@@ -27,6 +27,59 @@ from diffusers.utils import deprecate
 
 import sys
 sys.path.append("..")
+
+import torch.optim as optim
+
+# class NoisyOptimizerWrapper(optim.Optimizer):
+#     def __init__(self, optimizer, noise_level=0.01):
+#         # Ensure the optimizer being wrapped is a subclass of torch.optim.Optimizer
+#         if not isinstance(optimizer, optim.Optimizer):
+#             raise ValueError("Wrapped optimizer must be an instance of torch.optim.Optimizer")
+        
+#         # Save the wrapped optimizer and default noise level
+#         self.optimizer = optimizer
+#         self.default_noise_level = noise_level
+        
+#         # Pass the parameters of the wrapped optimizer to the base class (optim.Optimizer)
+#         super(NoisyOptimizerWrapper, self).__init__(optimizer.param_groups, optimizer.defaults)
+
+#     def step(self, closure=None, noise_level=None):
+#         # Use the provided noise level or fall back to the default
+#         if noise_level is None:
+#             noise_level = self.default_noise_level
+
+        
+#         loss = None
+#         if closure is not None:
+#             loss = closure()
+
+#         sigmat, sqrt_alpha_prod, w = noise_level
+#         if sigmat is None:
+#             self.optimizer.step(closure)
+#         else:
+#             # Iterate through the parameter groups and apply noisy updates
+#             noises = 2 * sigmat/sqrt_alpha_prod * w
+#             for group in self.optimizer.param_groups:
+#                 for param in group['params']:
+#                     if param.grad is not None:
+#                         noise = torch.randn_like(param.grad) * torch.sqrt(noises / group['lr'])
+#                         param.grad.data.add_(noise)
+
+#             self.optimizer.step(closure)
+
+#     def zero_grad(self):
+#         self.optimizer.zero_grad()
+
+#     def __getattr__(self, name):
+#         return getattr(self.optimizer, name)
+
+#     def state_dict(self):
+#         return self.optimizer.state_dict()
+
+#     def load_state_dict(self, state_dict):
+#         self.optimizer.load_state_dict(state_dict)
+
+
 
 
 class DDIMPipeline(DiffusionPipeline):
@@ -465,7 +518,7 @@ class Trainer(object):
         else:
             self.ema = None
 
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.fp16)
+        self.scaler = torch.amp.GradScaler(enabled=self.fp16)
 
 
         # variable init
@@ -690,7 +743,7 @@ class Trainer(object):
             t5 = True
 
         # encode pred_rgb to latents
-        loss, pseudo_loss, latents = self.guidance.train_step(text_z, pred_rgb, self.opt.scale, q_unet, pose, shading = shading, as_latent=as_latent, t5=t5)
+        loss, pseudo_loss, latents, weight = self.guidance.train_step(text_z, pred_rgb, self.opt.scale, q_unet, pose, shading = shading, as_latent=as_latent, t5=t5)
 
         # regularizations
         if not self.opt.dmtet:
@@ -718,8 +771,139 @@ class Trainer(object):
             if self.opt.lambda_lap > 0:
                 loss = loss + self.opt.lambda_lap * outputs['lap_loss']
 
-        return pred_rgb, pred_depth, loss, pseudo_loss, latents, shading
+        return pred_rgb, pred_depth, loss, pseudo_loss, latents, shading, weight
     
+
+    def train_multi_step(self, data, latents_noisy = None, t=None):
+
+        rays_o = data['rays_o'] # [B, N, 3]
+        rays_d = data['rays_d'] # [B, N, 3]
+        mvp = data['mvp'] # [B, 4, 4]
+
+        B, N = rays_o.shape[:2]
+        H, W = data['H'], data['W']
+
+        if self.global_step < self.opt.albedo_iters+1:
+            shading = 'albedo'
+            ambient_ratio = 1.0
+        else: 
+            rand = random.random()
+            if rand > 0.8: 
+                shading = 'albedo'
+                ambient_ratio = 1.0
+            elif rand > 0.4 and (not self.opt.no_textureless): 
+                shading = 'textureless'
+                ambient_ratio = 0.1
+            else: 
+                if not self.opt.no_lambertian:
+                    shading = 'lambertian'
+                    ambient_ratio = 0.1
+                else:
+                    shading = 'albedo'
+                    ambient_ratio = 1.0                    
+
+        # if random.random() < self.opt.p_normal:
+        #     shading = 'normal'
+        #     ambient_ratio = 1.0
+        # 
+        light_d = None
+        if self.opt.normal:
+            shading = 'normal'
+            ambient_ratio = 1.0     
+            if self.opt.p_textureless > random.random():
+                shading = 'textureless'
+                ambient_ratio = 0.1             
+                light_d = data['rays_o'].contiguous().view(-1, 3)[0] + 0.3 * torch.randn(3, device=rays_o.device, dtype=torch.float)
+                light_d = safe_normalize(light_d)             
+        if self.global_step < self.opt.normal_iters+1:
+            as_latent = True
+            shading = 'normal'
+            ambient_ratio = 1.0                   
+        else:
+            as_latent = False
+
+        bg_color = None
+        if self.global_step > 2000:
+            if random.random() > 0.5:
+                bg_color = None # use bg_net
+            else:
+                bg_color = torch.rand(3).to(self.device) # single color random bg
+        
+        if self.opt.backbone == "particle":
+            self.model.mytraining = True
+        binarize = False
+        outputs = self.model.render(rays_o, rays_d, mvp, H, W, staged=False, light_d= light_d,perturb=True, bg_color=bg_color, ambient_ratio=ambient_ratio, shading=shading, binarize=binarize)
+        if self.opt.backbone == "particle":
+            self.model.mytraining = False
+
+        pred_depth = outputs['depth'].reshape(B, 1, H, W)
+        
+        if as_latent:
+            pred_rgb = torch.cat([outputs['image'], outputs['weights_sum'].unsqueeze(-1)], dim=-1).reshape(B, H, W, 4).permute(0, 3, 1, 2).contiguous()
+        else:
+            pred_rgb = outputs['image'].reshape(B, H, W, 3 if not self.opt.latent else 4).permute(0, 3, 1, 2).contiguous() # [1, 3, H, W]
+        
+        # text embeddings
+        if self.opt.dir_text:
+            dirs = data['dir'] # [B,]
+            text_z = self.text_z[dirs]
+        else:
+            text_z = self.text_z
+        
+
+        q_unet = self.unet
+        if self.opt.q_cond:
+            pose = data['pose'].view(B, 16)
+        else:
+            pose = None
+
+
+        grad_clip = None
+        if self.opt.dynamic_clip:
+            grad_clip = 2 + 6 * min(1, self.epoch/(100.0*self.opt.n_particles))
+
+        t5 = False
+        if self.opt.t5_iters != -1 and self.global_step >= self.opt.t5_iters:
+            if self.global_step == self.opt.t5_iters:
+                print("Change into tmax = 500 setting")
+            t5 = True
+
+        # encode pred_rgb to latents
+
+        latents_noisy, pseudo_loss, latents, weight, loss,t = self.guidance.train_multi_step(text_z, pred_rgb, self.opt.scale, q_unet, pose, shading = shading, as_latent=as_latent, t5=t5, latents_noisy = latents_noisy, t=t)
+
+ 
+        
+        # regularizations
+        if not self.opt.dmtet:
+            if self.opt.lambda_opacity > 0:
+                loss_opacity = (outputs['weights_sum'] ** 2).mean()
+                loss = loss + self.opt.lambda_opacity * loss_opacity
+
+
+            if self.opt.lambda_entropy > 0:
+
+                alphas = outputs['weights'].clamp(1e-5, 1 - 1e-5)
+                # alphas = alphas ** 2 # skewed entropy, favors 0 over 1
+                loss_entropy = (- alphas * torch.log2(alphas) - (1 - alphas) * torch.log2(1 - alphas)).mean()
+
+                # lambda_entropy = self.opt.lambda_entropy * min(1, 2 * self.global_step / self.opt.iters)
+
+                loss = loss + self.opt.lambda_entropy * loss_entropy
+
+            if self.opt.lambda_orient > 0 and 'loss_orient' in outputs:
+                loss_orient = outputs['loss_orient']
+                loss = loss + self.opt.lambda_orient * loss_orient
+        else:
+            if self.opt.lambda_normal > 0:
+                loss = loss + self.opt.lambda_normal * outputs['normal_loss']
+
+            if self.opt.lambda_lap > 0:
+                loss = loss + self.opt.lambda_lap * outputs['lap_loss']
+
+        return pred_rgb, pred_depth, loss, pseudo_loss, latents, latents_noisy, shading, weight, t
+    
+
     def post_train_step(self):
 
         if self.opt.backbone == 'grid':
@@ -1078,21 +1262,46 @@ class Trainer(object):
             self.local_step += 1
             self.global_step += 1
 
-            self.optimizer.zero_grad()
+           
+            
+            if self.opt.grad_method != "two_stage":
+                self.optimizer.zero_grad()
+                with torch.cuda.amp.autocast(enabled=self.fp16):
+                    pred_rgbs, pred_depths, loss, pseudo_loss, latents, shading, weight = self.train_step(data)
 
-            with torch.cuda.amp.autocast(enabled=self.fp16):
-                pred_rgbs, pred_depths, loss, pseudo_loss, latents, shading = self.train_step(data)
 
-            self.scaler.scale(loss).backward()
-            self.post_train_step()
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+                    self.scaler.scale(loss).backward()
+                    self.post_train_step()
+                    if self.opt.grad_method == "sde":
+                        sigmat, sqrt_alpha_prod, w = weight 
+                        noise_level = 2 * sigmat/sqrt_alpha_prod * w * self.opt.noise_scaler**2
+                        self.scaler.step(self.optimizer, noise_level=noise_level)
+                    else:
+                        self.scaler.step(self.optimizer)
+                    self.scaler.update()
 
-            if self.scheduler_update_every_step:
-                self.lr_scheduler.step()
+                    if self.scheduler_update_every_step:
+                        self.lr_scheduler.step()
 
-            loss_val = loss.item()
-            total_loss += loss_val
+                    loss_val = loss.item()
+                    total_loss += loss_val
+            else:
+                latents_noisy = None
+                t=None
+                for _ in range(self.opt.multi_step_n):
+                    self.optimizer.zero_grad()
+                    with torch.amp.autocast(enabled = self.fp16, device_type='cuda'):
+                        pred_rgbs, pred_depths, loss, pseudo_loss, latents, latents_noisy, shading, weight,t = self.train_multi_step(data, latents_noisy,t)
+                        self.scaler.scale(loss).backward()
+                        self.post_train_step()
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+
+                        if self.scheduler_update_every_step:
+                            self.lr_scheduler.step()
+
+                        loss_val = loss.item()
+                        total_loss += loss_val
 
             if self.opt.buffer_size != -1:
                 self.add_buffer(latents, data['pose'])
