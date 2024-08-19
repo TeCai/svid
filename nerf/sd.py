@@ -121,8 +121,8 @@ class StableDiffusion(nn.Module):
             sigmat = (1 - self.alphas[t]) ** 0.5
 
             num_particles = self.opt.num_estimate_samples
-            # dimsum = torch.sum(torch.tensor(latents.shape[1:]))
-            kernel_sig = sigmat*self.opt.kernel_sig_scale
+            dimprod = torch.prod(torch.tensor(latents.shape[1:]))
+            kernel_sig = torch.sqrt(dimprod)*sigmat*self.opt.kernel_sig_scale
 
 
             with torch.no_grad():
@@ -138,12 +138,13 @@ class StableDiffusion(nn.Module):
                 x_star = latents_noisy[0].unsqueeze(0)
                 difference = (latents_noisy - x_star)
                 kernel_value = torch.exp(-torch.sum(difference**2, dim=(1,2,3))/(2*kernel_sig**2))[..., None, None, None]
+                # print(kernel_value)
 
-                grad = torch.sum(kernel_value * (noise_pred/sigmat + difference/kernel_sig**2), dim=0)/torch.sum(kernel_value, dim=0)*sigmat*w
-                
-                weight = (sigmat, sqrt_alpha_prod, w)
+            grad = torch.sum(kernel_value * (noise_pred/sigmat + difference/kernel_sig**2), dim=0)/torch.sum(kernel_value, dim=0)*sigmat*w
+
+            weight = (sigmat, sqrt_alpha_prod, w)
                 # weight = 0.
-                loss = SpecifyGradient.apply(latents, grad)
+            loss = SpecifyGradient.apply(latents, grad.unsqueeze(0))
         
         elif self.opt.grad_method == 'sde':
             with torch.no_grad():
