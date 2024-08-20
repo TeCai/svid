@@ -22,7 +22,7 @@ from torch_ema import ExponentialMovingAverage
 from packaging import version as pver
 from typing import List, Optional, Tuple, Union
 
-from diffusers.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
+from diffusers import DiffusionPipeline, ImagePipelineOutput
 from diffusers.utils import deprecate
 
 import sys

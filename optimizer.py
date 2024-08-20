@@ -400,9 +400,12 @@ class EulerMaruyama(Optimizer):
 
                 # Gradient (drift term)
                 d_p = param.grad.data
+                with torch.no_grad():
+                    scale_dp = torch.sqrt(torch.mean(d_p ** 2))
 
                 # Noise (diffusion term)
                 noise = torch.randn_like(d_p) * torch.sqrt(noise_level) * math.sqrt(lr)
+                # noise = torch.randn_like(d_p) * math.sqrt(lr) * scale_dp * 0.01
 
                 # Euler-Maruyama update rule
                 param.data.add_(d_p, alpha=-lr)

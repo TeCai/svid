@@ -140,7 +140,7 @@ class StableDiffusion(nn.Module):
                 kernel_value = torch.exp(-torch.sum(difference**2, dim=(1,2,3))/(2*kernel_sig**2))[..., None, None, None]
                 # print(kernel_value)
 
-            grad = torch.sum(kernel_value * (noise_pred/sigmat + difference/kernel_sig**2), dim=0)/torch.sum(kernel_value, dim=0)*sigmat*w
+            grad = torch.sum(kernel_value * (noise_pred/sigmat + difference/kernel_sig**2), dim=0)/torch.sum(kernel_value, dim=0)*sigmat*w/sqrt_alpha_prod
 
             weight = (sigmat, sqrt_alpha_prod, w)
                 # weight = 0.
