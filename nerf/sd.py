@@ -62,8 +62,8 @@ class StableDiffusion(nn.Module):
         self.text_encoder = CLIPTextModel.from_pretrained(model_key, subfolder="text_encoder", cache_dir = opt.cache_dir).to(self.device)
         self.unet = UNet2DConditionModel.from_pretrained(model_key, subfolder="unet", cache_dir = opt.cache_dir).to(self.device)
 
-        # if is_xformers_available():
-        #     self.unet.enable_xformers_memory_efficient_attention()
+        if is_xformers_available():
+            self.unet.enable_xformers_memory_efficient_attention()
         
         self.scheduler = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler", cache_dir = opt.cache_dir)
 
@@ -107,14 +107,14 @@ class StableDiffusion(nn.Module):
             latents = self.encode_imgs(pred_rgb_512)        
 
         if t5: # Anneal time schedule
-            t = torch.randint(self.min_step, 500 + 1, [1], dtype=torch.long, device=self.device)
+            t = torch.randint(self.min_step, 700 + 1, [1], dtype=torch.long, device=self.device)
         else:
             # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
             t = torch.randint(self.min_step, self.max_step + 1, [1], dtype=torch.long, device=self.device)
 
         # predict the noise residual with unet, NO grad!
         # TODO: noise calculating part
-
+        
         if self.opt.grad_method == 'estimate':
             w = (1 - self.alphas[t])
             sqrt_alpha_prod = self.alphas[t] ** 0.5
@@ -209,11 +209,13 @@ class StableDiffusion(nn.Module):
                 # 
                 # w = w*sqrt_alpha_prod
                 grad =  w * (noise_pred ) / sqrt_alpha_prod
+                # 1/snr + 1 weighting
+                # grad =  (noise_pred) *  (w /sqrt_alpha_prod + 1)
                 # weight = torch.sqrt(sigmat / sqrt_alpha_prod  * w * 2)*0.01
 
 
 
-                weight = (sigmat, sqrt_alpha_prod, w)
+                weight = (sigmat, sqrt_alpha_prod, w/sqrt_alpha_prod)
                 # weight = 0.
                 loss = SpecifyGradient.apply(latents, grad)
         else:

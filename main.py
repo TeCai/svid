@@ -5,7 +5,7 @@ import sys
 from nerf.provider import NeRFDataset
 from nerf.utils import *
 from nerf.network_particle import NeRFNetwork
-from transformers import get_cosine_schedule_with_warmup
+from transformers import get_cosine_schedule_with_warmup, get_constant_schedule_with_warmup
 
 if __name__ == '__main__':
 
@@ -284,8 +284,8 @@ if __name__ == '__main__':
             optimizer = lambda model: Adan(model.get_params(5 * opt.lr), eps=1e-8, weight_decay=2e-5, max_grad_norm=5.0, foreach=False)
         else:
             if opt.grad_method == 'estimate':
-                # optimizer = lambda model: torch.optim.Adam(model.get_params(opt.lr, finetune = opt.finetune), betas=(0.9, 0.99), eps=1e-15)
-                optimizer = lambda model: torch.optim.SGD(model.get_params(opt.lr, finetune = opt.finetune))
+                optimizer = lambda model: torch.optim.Adam(model.get_params(opt.lr, finetune = opt.finetune), betas=(0.9, 0.99), eps=1e-15)
+                # optimizer = lambda model: torch.optim.SGD(model.get_params(opt.lr, finetune = opt.finetune))
             elif opt.grad_method == 'sde':
 
             # 
@@ -296,7 +296,8 @@ if __name__ == '__main__':
                 optimizer = lambda model: torch.optim.SGD(model.get_params(opt.lr, finetune = opt.finetune))
 
         # scheduler = lambda optimizer: optim.lr_scheduler.LambdaLR(optimizer, lambda iter: 1)
-        scheduler = lambda optimizer: get_cosine_schedule_with_warmup(optimizer, opt.warm_iters, opt.iters, opt.min_lr)
+        # scheduler = lambda optimizer: get_cosine_schedule_with_warmup(optimizer, opt.warm_iters, opt.iters, opt.min_lr)
+        scheduler = lambda optimizer: get_constant_schedule_with_warmup(optimizer, opt.warm_iters)
 
         if opt.guidance == 'stable-diffusion':
             from nerf.sd import StableDiffusion
