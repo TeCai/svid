@@ -237,7 +237,7 @@ if __name__ == '__main__':
     if opt.p_textureless != 0:
         opt.workspace += "-ptext-" + str(opt.p_textureless)
     # add more
-    opt.workspace += "-gradMethod"+str(opt.grad_method)
+    opt.workspace += "-gradMethod-"+str(opt.grad_method)
     opt.workspace += "-x_star_Contained" if not opt.independent_x_star else "-x_star_Independent"
     opt.workspace += "-kernel_sig_scale"+str(opt.kernel_sig_scale)
     opt.workspace += opt.note
