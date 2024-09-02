@@ -120,23 +120,27 @@ class StableDiffusion(nn.Module):
             sqrt_alpha_prod = self.alphas[t] ** 0.5
             sigmat = (1 - self.alphas[t]) ** 0.5
 
-            num_particles = self.opt.num_estimate_samples
+            num_particles = self.opt.num_estimate_samples 
             dimprod = torch.prod(torch.tensor(latents.shape[1:]))
             kernel_sig = torch.sqrt(dimprod)*sigmat*self.opt.kernel_sig_scale
+            # kernel_sig = torch.sqrt(dimprod)*torch.sqrt(sigmat)*self.opt.kernel_sig_scale
 
 
             with torch.no_grad():
-                noise = torch.randn(size = [num_particles, *latents.shape[1:]], device=latents.device)
+                num_noise = num_particles if self.opt.x_star_included else num_particles + 1
+                noise = torch.randn(size = [num_noise, *latents.shape[1:]], device=latents.device)
+
                 latents_noisy = self.scheduler.add_noise(latents, noise, t)
-                latent_model_input = torch.cat([latents_noisy] * 2)
+
+                latent_model_input = torch.cat([latents_noisy[:num_particles]] * 2)
                 # turn text_embeddings (2,h,w) into (2*num_particles, h, w)
                 text_embeddings = repeat(text_embeddings, 'b h w -> (b p) h w', p=num_particles)
                 noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_text + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                x_star = latents_noisy[0].unsqueeze(0)
-                difference = (latents_noisy - x_star)
+                x_star = latents_noisy[-1].unsqueeze(0)
+                difference = (latents_noisy[:num_particles] - x_star)
                 kernel_value = torch.exp(-torch.sum(difference**2, dim=(1,2,3))/(2*kernel_sig**2))[..., None, None, None]
                 # print(kernel_value)
 

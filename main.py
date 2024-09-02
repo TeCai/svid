@@ -51,6 +51,7 @@ if __name__ == '__main__':
     # For Nw Interpolate
     parser.add_argument('--kernel_sig_scale', type=float, default=0.1, help="The multipler of the variance of the kernel")
     parser.add_argument('--num_estimate_samples', type=int, default=5, help="Number of samples to do NW interpolation")
+    parser.add_argument('--x_star_included', type=bool, default=True, help="Whether to include x_star in the samples")
     # For SDE
     parser.add_argument('--noise_scaler', type=float, default=0.01, help="scaler for the noise of diffuse term")
     parser.add_argument('--jump', action='store_true',  help="Whether to use noise jumper")
