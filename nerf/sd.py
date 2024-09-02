@@ -127,8 +127,9 @@ class StableDiffusion(nn.Module):
 
 
             with torch.no_grad():
-                num_noise = num_particles if self.opt.x_star_included else num_particles + 1
+                num_noise = num_particles if not self.opt.independent_x_star else num_particles + 1
                 noise = torch.randn(size = [num_noise, *latents.shape[1:]], device=latents.device)
+                print(self.opt.independent_x_star, num_noise)
 
                 latents_noisy = self.scheduler.add_noise(latents, noise, t)
 
@@ -140,11 +141,12 @@ class StableDiffusion(nn.Module):
                 noise_pred = noise_pred_text + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 x_star = latents_noisy[-1].unsqueeze(0)
+                # print(latents_noisy.shape)
                 difference = (latents_noisy[:num_particles] - x_star)
                 kernel_value = torch.exp(-torch.sum(difference**2, dim=(1,2,3))/(2*kernel_sig**2))[..., None, None, None]
                 # print(kernel_value)
 
-            grad = torch.sum(kernel_value * (noise_pred/sigmat + difference/kernel_sig**2), dim=0)/torch.sum(kernel_value, dim=0)*sigmat*w/sqrt_alpha_prod
+            grad = torch.sum(kernel_value * (noise_pred/sigmat + difference/kernel_sig**2), dim=0)/torch.sum(kernel_value, dim=0)*sigmat*w # no /alpha_prod because it is wrong
 
             weight = (sigmat, sqrt_alpha_prod, w)
                 # weight = 0.
