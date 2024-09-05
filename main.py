@@ -52,6 +52,7 @@ if __name__ == '__main__':
     parser.add_argument('--kernel_sig_scale', type=float, default=0.1, help="The multipler of the variance of the kernel")
     parser.add_argument('--num_estimate_samples', type=int, default=5, help="Number of samples to do NW interpolation")
     parser.add_argument('--independent_x_star', action = 'store_true', help="Whether to include x_star in the samples")
+    parser.add_argument('--CFG_to_X', action = 'store_true', help="where multiply CFG to X")
     # For SDE
     parser.add_argument('--noise_scaler', type=float, default=0.01, help="scaler for the noise of diffuse term")
     parser.add_argument('--jump', action='store_true',  help="Whether to use noise jumper")
@@ -240,6 +241,7 @@ if __name__ == '__main__':
     opt.workspace += "-gradMethod-"+str(opt.grad_method)
     opt.workspace += "-x_star_Contained" if not opt.independent_x_star else "-x_star_Independent"
     opt.workspace += "-kernel_sig_scale"+str(opt.kernel_sig_scale)
+    opt.workspace += "-CFGX"+str(opt.CFG_to_X)
     opt.workspace += opt.note
 
     if opt.set_ws != "":

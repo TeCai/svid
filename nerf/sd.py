@@ -93,6 +93,20 @@ class StableDiffusion(nn.Module):
         text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
         return text_embeddings
 
+    #Common Diffusion Noise Schedules and Sample Steps Are Flawed
+    @torch.no_grad()
+    def apply_cfg(pos, neg, weight=7.5, rescale=0.7):
+        # Apply regular classifier-free guidance.
+        cfg = neg + weight * (pos - neg)
+        # Calculate standard deviations.
+        std_pos = pos.std([1,2,3], keepdim=True)
+        std_cfg = cfg.std([1,2,3], keepdim=True)
+        # Apply guidance rescale with fused operations.
+        factor = std_pos / std_cfg
+        factor = rescale * factor + (1 - rescale)
+        return cfg * factor
+    
+
     def train_step(self, text_embeddings, pred_rgb, guidance_scale=100, q_unet = None, pose = None, shading = None, grad_clip = None, as_latent = False, t5 = False):
         
         # interp to 512x512 to be fed into vae.
@@ -129,7 +143,7 @@ class StableDiffusion(nn.Module):
             with torch.no_grad():
                 num_noise = num_particles if not self.opt.independent_x_star else num_particles + 1
                 noise = torch.randn(size = [num_noise, *latents.shape[1:]], device=latents.device)
-                print(self.opt.independent_x_star, num_noise)
+                # print(self.opt.independent_x_star, num_noise)
 
                 latents_noisy = self.scheduler.add_noise(latents, noise, t)
 
@@ -138,15 +152,16 @@ class StableDiffusion(nn.Module):
                 text_embeddings = repeat(text_embeddings, 'b h w -> (b p) h w', p=num_particles)
                 noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_text + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                # noise_pred = noise_pred_text + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                noise_pred = apply_cfg(pos = noise_pred_weight, neg = noise_pred_uncond, weight = guidance_scale)
 
                 x_star = latents_noisy[-1].unsqueeze(0)
                 # print(latents_noisy.shape)
                 difference = (latents_noisy[:num_particles] - x_star)
                 kernel_value = torch.exp(-torch.sum(difference**2, dim=(1,2,3))/(2*kernel_sig**2))[..., None, None, None]
                 # print(kernel_value)
-
-            grad = torch.sum(kernel_value * (noise_pred/sigmat + difference/kernel_sig**2), dim=0)/torch.sum(kernel_value, dim=0)*sigmat*w # no /alpha_prod because it is wrong
+            multipler = guidance_scale*0.3 if opt.CFG_to_X else 1.
+            grad = torch.sum(kernel_value * (noise_pred/sigmat + multipler*difference/kernel_sig**2), dim=0)/torch.sum(kernel_value, dim=0)*sigmat*w # no /alpha_prod because it is wrong
 
             weight = (sigmat, sqrt_alpha_prod, w)
                 # weight = 0.
